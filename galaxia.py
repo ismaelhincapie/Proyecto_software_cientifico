@@ -230,174 +230,164 @@ def mostrar_proyecciones():
     tk.Label(frame_resultados, text=f"α final = {np.degrees(alpha_f):.3f}°, β final = {np.degrees(beta_f):.3f}°").pack()
     
 def mostrar_resultados_y_exportar():
-    idx_disco = indices_componentes[2]
-    cm_d = np.average(posiciones_completas[idx_disco], axis=0, weights=masas_completas[idx_disco])
+    import traceback
+    try:
+        # --- Validaciones con mensaje (antes salía en silencio) ---
+        if archivo_cargado is None:
+            tk.messagebox.showwarning("Advertencia", "Primero carga un archivo desde 'Cargar archivo'.")
+            return
+        if rotacion is None:
+            tk.messagebox.showwarning("Advertencia", "Primero pulsa 'Mostrar orientación del disco' para alinear el disco.")
+            return
+        if indices_componentes is None or 2 not in indices_componentes:
+            tk.messagebox.showwarning("Advertencia", "No hay componente de disco (tipo 2).")
+            return
 
-    if archivo_cargado is None or rotacion is None:
-        return
+        # --- Limpiar panel de resultados y mostrar estado ---
+        for w in frame_resultados.winfo_children():
+            w.destroy()
+        tk.Label(frame_resultados, text="Calculando perfiles...", fg="blue").pack()
 
-    for w in frame_resultados.winfo_children():
-        w.destroy()
+        # --- Parámetros y CM del disco (una vez) ---
+        dr = parametros_analisis['dr']
+        radio_max = parametros_analisis['radio_max']
+        idx_disco = indices_componentes[2]
+        cm_disco = np.average(posiciones_completas[idx_disco], axis=0, weights=masas_completas[idx_disco])
 
-    dr = parametros_analisis['dr']
-    radio_max = parametros_analisis['radio_max']
+        # =========================================================
+        # Procesar cada componente
+        # =========================================================
+        perfil_r_disco = None   # para la comparación final
+        perfil_b = None
+        perfil_dm = None
 
-    # Procesar cada componente
-    for nombre, tipo in [('Disco', 2), ('Bulbo', 3), ('Materia Oscura', 1)]:
-        if not componentes_seleccionados.get(nombre.lower().replace(' ', '_')):
-            continue
-        if tipo not in indices_componentes:
-            continue
+        for nombre, tipo in [('Disco', 2), ('Bulbo', 3), ('Materia Oscura', 1)]:
+            clave_sel = nombre.lower().replace(' ', '_')  # 'disco', 'bulbo', 'materia_oscura'
+            if not componentes_seleccionados.get(clave_sel, True):
+                continue
+            if tipo not in indices_componentes:
+                continue
 
-        idx = indices_componentes[tipo]
-        pos = posiciones_completas[idx]
-        masas = masas_completas[idx]
-        cm_disco = np.average(posiciones_completas[indices_componentes[2]], axis=0, weights=masas_completas[indices_componentes[2]])
-        pos_r = (pos - cm_disco) @ rotacion.T
+            idx = indices_componentes[tipo]
+            pos = posiciones_completas[idx]
+            masas = masas_completas[idx]
 
-        df = pd.DataFrame(pos_r, columns=['x_f', 'y_f', 'z_f'])
-        df['masa'] = masas
-        df['r_xy'] = np.sqrt(df['x_f']**2 + df['y_f']**2)
-        df = df[df['r_xy'] < radio_max]
+            # rotar respecto al CM del disco
+            pos_r = (pos - cm_disco) @ rotacion.T
 
-        # Perfil ρ(z)
-        bins_z = np.arange(-30, 30 + 0.2, 0.2)
-        df['bin_z'] = pd.cut(df['z_f'], bins=bins_z)
-        perfil_z = df.groupby('bin_z')['masa'].sum().reset_index()
-        centro_z = 0.5 * (bins_z[:-1] + bins_z[1:])
-        area_proj = np.pi * radio_max**2
-        perfil_z['densidad_z'] = perfil_z['masa'] / (0.2 * area_proj)
-        perfil_z['z_centro'] = centro_z
-        perfil_z = perfil_z[perfil_z['densidad_z'] > 0]
-        perfil_z.to_csv(f'perfil_z_{nombre.lower().replace(" ", "_")}.csv', index=False)
+            df = pd.DataFrame(pos_r, columns=['x_f', 'y_f', 'z_f'])
+            df['masa'] = masas
+            df['r_xy'] = np.sqrt(df['x_f']**2 + df['y_f']**2)
+            df = df[df['r_xy'] < radio_max]
 
-        fig_z, ax_z = plt.subplots(figsize=(6, 4))
-        ax_z.plot(perfil_z['z_centro'], np.log10(perfil_z['densidad_z']), label=nombre)
-        ax_z.set_xlabel('z (kpc)')
-        ax_z.set_ylabel(r'$\log_{10}(\rho\ [M_\odot / kpc^3])$')
-        ax_z.set_title(f'Perfil de densidad vertical {nombre}')
-        ax_b.set_xlim(-3, 3)
-        ax_b.set_ylim(-2, 1)
-        ax_b.autoscale(False)
-        ax_z.legend()
-        FigureCanvasTkAgg(fig_z, master=frame_resultados).get_tk_widget().pack()
+            # ----------------- Perfil ρ(z) -----------------
+            dz = 0.2
+            bins_z = np.arange(-30, 30 + dz, dz)
 
-        # Perfil Σ(r)
-        bordes = np.arange(0, df['r_xy'].max() + dr, dr)
-        df['arandela'] = pd.cut(df['r_xy'], bins=bordes)
-        perfil_r = df.groupby('arandela')['masa'].sum().reset_index()
-        radio_medio = 0.5 * (bordes[:-1] + bordes[1:])
-        area = np.pi * (bordes[1:]**2 - bordes[:-1]**2)
-        perfil_r['densidad'] = perfil_r['masa'] / area
-        perfil_r['radio_medio'] = radio_medio
-        perfil_r = perfil_r[perfil_r['densidad'] > 0]
-        perfil_r.to_csv(f'perfil_{nombre.lower().replace(" ", "_")}.csv', index=False)
+            mass_z, _ = np.histogram(df['z_f'].values, bins=bins_z, weights=df['masa'].values)
+            centro_z = 0.5 * (bins_z[1:] + bins_z[:-1])
 
-        fig_r, ax_r = plt.subplots(figsize=(6, 4))
-        ax_r.plot(perfil_r['radio_medio'], perfil_r['densidad'])
-        ax_r.set_xlabel(r'$\log_{10}(r\ [kpc])$')
-        ax_r.set_ylabel(r'(\Sigma\ [M_\odot / kpc^2])$')
-        ax_r.set_title(f'Perfil log-log {nombre}')
-        ax_b.set_xlim(0, 25)
-        ax_b.set_ylim(-5, -1)
-        ax_b.autoscale(False)
-        ax_r.legend()
-        FigureCanvasTkAgg(fig_r, master=frame_resultados).get_tk_widget().pack()
+            area_proj = np.pi * radio_max**2
+            densidad_z = mass_z / (dz * area_proj)
 
-    # ----------- PERFIL bulbo -----------
-    perfil_b = None
-    if componentes_seleccionados['bulbo'] and 3 in indices_componentes:
-        idx_b = indices_componentes[3]
-        pos_b = (posiciones_completas[idx_b] - cm_d) @ rotacion.T
-        m_b = masas_completas[idx_b]
+            perfil_z = pd.DataFrame({
+                'z_centro': centro_z,
+                'masa': mass_z,
+                'densidad_z': densidad_z
+            })
+            perfil_z = perfil_z[perfil_z['densidad_z'] > 0]
+            perfil_z.to_csv(f'perfil_z_{nombre.lower().replace(" ", "_")}.csv', index=False)
 
-        df_bulbo = pd.DataFrame(pos_b, columns=['x_f', 'y_f', 'z_f'])
-        df_bulbo['masa'] = m_b
-        df_bulbo['r_xy'] = np.sqrt(df_bulbo.x_f**2 + df_bulbo.y_f**2)
-        df_bulbo = df_bulbo[df_bulbo['r_xy'] < parametros_analisis['radio_max']]
+            fig_z, ax_z = plt.subplots(figsize=(6, 4))
+            ax_z.plot(perfil_z['z_centro'], np.log10(perfil_z['densidad_z']), label=nombre)
+            ax_z.set_xlabel('z (kpc)')
+            ax_z.set_ylabel(r'$\log_{10}(\rho\ [M_\odot / kpc^3])$')
+            ax_z.set_title(f'Perfil de densidad vertical {nombre}')
+            ax_z.legend()
+            FigureCanvasTkAgg(fig_z, master=frame_resultados).get_tk_widget().pack()
 
-        bordes_b = np.arange(0, df_bulbo.r_xy.max() + dr, dr)
-        suma_rad_b = bordes_b[1:] + bordes_b[:-1]
-        area_b = np.pi * dr * suma_rad_b
+            # ----------------- Perfil Σ(r) -----------------
+            if len(df) == 0 or df['r_xy'].max() <= 0:
+                continue  # evita bins vacíos
 
-        df_bulbo['arandela'] = pd.cut(df_bulbo.r_xy, bins=bordes_b, labels=np.arange(len(bordes_b)-1))
-        perfil_b = df_bulbo.groupby('arandela')['masa'].sum().to_frame()
-        perfil_b['area'] = area_b
-        perfil_b['densidad'] = perfil_b['masa'] / perfil_b['area']
-        perfil_b['radio_medio'] = suma_rad_b / 2
-        perfil_b = perfil_b[perfil_b['densidad'] > 0]
-        perfil_b.to_csv('perfil_bulbo.csv', index=False)
+            bordes = np.arange(0, df['r_xy'].max() + dr, dr)
+            if len(bordes) < 2:
+                continue
 
-        fig_b, ax_b = plt.subplots(figsize=(6, 4))
-        ax_b.plot(np.log10(perfil_b['radio_medio']), np.log10(perfil_b['densidad']), label='Bulbo', color='purple')
-        ax_b.set_xlabel(r'$\log_{10}(r\ [kpc])$')
-        ax_b.set_ylabel(r'$\log_{10}(\Sigma\ [M_\odot / kpc^2])$')
-        ax_b.set_title('Perfil log-log del bulbo')
-        ax_b.set_xlim(-2, 1)
-        ax_b.set_ylim(-5, 2)
-        ax_b.autoscale(False)
-        ax_b.legend()
-        FigureCanvasTkAgg(fig_b, master=frame_resultados).get_tk_widget().pack()
+            df['arandela'] = pd.cut(df['r_xy'], bins=bordes, include_lowest=True, right=False, ordered=True)
+            perfil_r = df.groupby('arandela', observed=True)['masa'].sum().reset_index()
 
+            radio_medio = 0.5 * (bordes[:-1] + bordes[1:])
+            area = np.pi * (bordes[1:]**2 - bordes[:-1]**2)  # área de anillo
+            perfil_r['densidad'] = perfil_r['masa'].values / area
+            perfil_r['radio_medio'] = radio_medio
+            perfil_r = perfil_r[perfil_r['densidad'] > 0]
+            perfil_r.to_csv(f'perfil_{clave_sel}.csv', index=False)
 
-        tk.Label(frame_resultados, text='Perfil Σ bulbo exportado en perfil_bulbo.csv', fg='blue').pack()
-    else:
-        tk.Label(frame_resultados, text="No se encontró componente de bulbo o no está seleccionado", fg="gray").pack()
+            fig_r, ax_r = plt.subplots(figsize=(6, 4))
+            # IMPORTANTE: según tu instrucción, SOLO el DISCO va SIN log en los ejes
+            if tipo == 2:
+                ax_r.plot(perfil_r['radio_medio'], perfil_r['densidad'], label=nombre, color='blue')
+                ax_r.set_xlabel(r'$r\ [\mathrm{kpc}]$')
+                ax_r.set_ylabel(r'$\Sigma\ [M_\odot / \mathrm{kpc}^2]$')
+                ax_r.set_title(f'Perfil Σ(r) {nombre} (lineal)')
 
-    # ----------- PERFIL materia oscura -----------
-    perfil_dm = None
-    if componentes_seleccionados['materia_oscura'] and 1 in indices_componentes:
-        idx_dm = indices_componentes[1]
-        pos_dm = (posiciones_completas[idx_dm] - cm_d) @ rotacion.T
-        m_dm = masas_completas[idx_dm]
+                # guardamos para comparación final
+                perfil_r_disco = perfil_r[['radio_medio', 'densidad']].copy()
 
-        df_dm = pd.DataFrame(pos_dm, columns=['x_f', 'y_f', 'z_f'])
-        df_dm['masa'] = m_dm
-        df_dm['r_xy'] = np.sqrt(df_dm.x_f**2 + df_dm.y_f**2)
-        df_dm = df_dm[df_dm['r_xy'] < parametros_analisis['radio_max']]
+            else:
+                ax_r.plot(np.log10(perfil_r['radio_medio']), np.log10(perfil_r['densidad']), label=nombre)
+                ax_r.set_xlabel(r'$\log_{10}(r\ [\mathrm{kpc}])$')
+                ax_r.set_ylabel(r'$\log_{10}(\Sigma\ [M_\odot / \mathrm{kpc}^2])$')
+                ax_r.set_title(f'Perfil Σ(r) {nombre} (log-log)')
 
-        bordes_dm = np.arange(0, df_dm.r_xy.max() + dr, dr)
-        suma_rad_dm = bordes_dm[1:] + bordes_dm[:-1]
-        area_dm = np.pi * dr * suma_rad_dm
+                # RANGOS PEDIDOS (ejemplo de bulbo y halo)
+                if tipo == 3:  # bulbo
+                    ax_r.set_xlim(-2, 1)
+                    ax_r.set_ylim(-5, 2)
+                elif tipo == 1:  # materia oscura
+                    ax_r.set_xlim(-1, 1.5)
+                    ax_r.set_ylim(0, 6)
 
-        df_dm['arandela'] = pd.cut(df_dm.r_xy, bins=bordes_dm, labels=np.arange(len(bordes_dm)-1))
-        perfil_dm = df_dm.groupby('arandela')['masa'].sum().to_frame()
-        perfil_dm['area'] = area_dm
-        perfil_dm['densidad'] = perfil_dm['masa'] / perfil_dm['area']
-        perfil_dm['radio_medio'] = suma_rad_dm / 2
-        perfil_dm = perfil_dm[perfil_dm['densidad'] > 0]
-        perfil_dm.to_csv('perfil_materia_oscura.csv', index=False)
+            ax_r.legend()
+            canvas_r = FigureCanvasTkAgg(fig_r, master=frame_resultados)
+            canvas_r.draw()
+            canvas_r.get_tk_widget().pack()
 
-        fig_dm, ax_dm = plt.subplots(figsize=(6, 4))
-        ax_dm.plot(np.log10(perfil_dm['radio_medio']), np.log10(perfil_dm['densidad']), label='Materia Oscura', color='black')
-        ax_dm.set_xlabel(r'$\log_{10}(r\ [kpc])$')
-        ax_dm.set_ylabel(r'$\log_{10}(\Sigma\ [M_\odot / kpc^2])$')
-        ax_dm.set_title('Perfil log-log de la materia oscura')
-        ax_b.set_xlim(-5, 2)
-        ax_b.set_ylim(-2, 1)
-        ax_b.autoscale(False)
-        ax_dm.legend()
-        FigureCanvasTkAgg(fig_dm, master=frame_resultados).get_tk_widget().pack()
+            # Guardar variables para comparación final si lo deseas
+            if tipo == 3:
+                perfil_b = perfil_r[['radio_medio', 'densidad']].copy()
+            if tipo == 1:
+                perfil_dm = perfil_r[['radio_medio', 'densidad']].copy()
 
+        # ----------------- Comparación Final -----------------
+        fig_cmp, ax_cmp = plt.subplots(figsize=(7, 5))
+        if perfil_r_disco is not None:
+            ax_cmp.plot(np.log10(perfil_r_disco['radio_medio']),
+                        np.log10(perfil_r_disco['densidad']),
+                        label='Disco', color='blue')
+        if perfil_b is not None:
+            ax_cmp.plot(np.log10(perfil_b['radio_medio']),
+                        np.log10(perfil_b['densidad']),
+                        label='Bulbo', color='purple')
+        if perfil_dm is not None:
+            ax_cmp.plot(np.log10(perfil_dm['radio_medio']),
+                        np.log10(perfil_dm['densidad']),
+                        label='Materia Oscura', color='black')
 
-        tk.Label(frame_resultados, text='Perfil Σ materia oscura exportado en perfil_materia_oscura.csv', fg='blue').pack()
-    else:
-        tk.Label(frame_resultados, text="No se encontró componente de materia oscura o no está seleccionado", fg="gray").pack()
+        ax_cmp.set_xlabel(r'$\log_{10}(r\ [\mathrm{kpc}])$')
+        ax_cmp.set_ylabel(r'$\log_{10}(\Sigma\ [M_\odot / \mathrm{kpc}^2])$')
+        ax_cmp.set_title('Comparación de perfiles Σ(r)')
+        ax_cmp.legend()
 
-    # ----------- COMPARACIÓN FINAL -----------
-    fig_cmp, ax_cmp = plt.subplots(figsize=(7, 5))
-    if perfil_r is not None:
-        ax_cmp.plot(np.log10(perfil_r['radio_medio']), np.log10(perfil_r['densidad']), label='Disco', color='blue')
-    if perfil_b is not None:
-        ax_cmp.plot(np.log10(perfil_b['radio_medio']), np.log10(perfil_b['densidad']), label='Bulbo', color='purple')
-    if perfil_dm is not None:
-        ax_cmp.plot(np.log10(perfil_dm['radio_medio']), np.log10(perfil_dm['densidad']), label='Materia Oscura', color='black')
+        canvas_cmp = FigureCanvasTkAgg(fig_cmp, master=frame_resultados)
+        canvas_cmp.draw()
+        canvas_cmp.get_tk_widget().pack()
 
-    ax_cmp.set_xlabel(r'$\log_{10}(r\ [kpc])$')
-    ax_cmp.set_ylabel(r'$\log_{10}(\Sigma\ [M_\odot / kpc^2])$')
-    ax_cmp.set_title('Comparación de perfiles')
-    ax_cmp.legend()
-    FigureCanvasTkAgg(fig_cmp, master=frame_resultados).get_tk_widget().pack()
+        tk.Label(frame_resultados, text='Perfiles exportados (CSV) en la carpeta de trabajo.', fg='green').pack()
+
+    except Exception as e:
+        tk.messagebox.showerror("Error", f"{e}\n\n{traceback.format_exc()}")
 
 
 
